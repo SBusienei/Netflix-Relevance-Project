@@ -1,9 +1,0 @@
-{
-  "experiments": [
-    {"name": "baseline", "config": {}},
-    {"name": "word_tokenisation", "config": {"tokenizer": "words"}},
-    {"name": "porter_stemming", "config": {"stemming": true}},
-    {"name": "title_weight_3", "config": {"field_weights": {"title": 3}}},
-    {"name": "title_description_only", "config": {"fields": ["title", "description"]}}
-  ]
-}

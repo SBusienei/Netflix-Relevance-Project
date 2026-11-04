@@ -3,3 +3,5 @@ __pycache__/
 .pytest_cache/
 judgment_data/
 .streamlit/secrets.toml
+.hybrid_cache/
+.venv/

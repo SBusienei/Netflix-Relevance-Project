@@ -1,7 +1,10 @@
+--extra-index-url https://download.pytorch.org/whl/cpu
 streamlit>=1.57,<2
-pandas
-scikit-learn
 rank-bm25==0.2.2
-nltk==3.9.2
 numpy>=1.24,<3
-pytest>=8,<9
+torch==2.15.0+cpu; sys_platform == "linux"
+sentence-transformers>=5,<7
+faiss-cpu>=1.12,<2
+fastapi>=0.115,<1
+uvicorn>=0.30,<1
+httpx>=0.28,<1

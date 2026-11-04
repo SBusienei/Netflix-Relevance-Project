@@ -5,7 +5,7 @@ from pathlib import Path
 
 import pytest
 
-from film_data import FIELDS, FilmRecord, clean_records, load_records, normalize_text
+from src.data import FIELDS, FilmRecord, clean_records, load_records, normalize_text
 
 
 def record(show_id: str = "s1", **values: str) -> FilmRecord:

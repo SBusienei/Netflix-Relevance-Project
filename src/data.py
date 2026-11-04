@@ -8,7 +8,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 
-DATA_PATH = Path(__file__).with_name("netflix_titles.csv")
+DATA_PATH = Path(__file__).resolve().parents[1] / "netflix_titles.csv"
 FIELDS = (
     "show_id", "type", "title", "director", "cast", "country", "date_added",
     "release_year", "rating", "duration", "listed_in", "description",
