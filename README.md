@@ -14,6 +14,18 @@ hallucination-free answering is claimed.
 The former genre classifier and separate failure-cause/BM25-ablation track are
 not part of this minimal prototype. The original upstream-failure thesis remains untested.
 
+**[Open the hosted app](https://cheruto-netflix-relevance.streamlit.app/)**
+(the deployment may still need updating).
+
+<details>
+<summary>Previous interface, before the hybrid rewrite</summary>
+
+This screenshot is retained as project history, not as a preview of the current interface.
+
+<img width="1582" height="771" alt="Earlier Netflix project interface" src="https://github.com/user-attachments/assets/de70980c-6728-430b-b2ab-18aa4874d79d" />
+
+</details>
+
 ## Files you need to understand
 
 | File | Its one job |
@@ -205,30 +217,33 @@ cross-checks only in tests. Fixture grades are not Netflix research judgments.
 
 Docker build instructions: `docker build -t netflix-search .`, then
 `docker run --rm -p 127.0.0.1:8000:8000 netflix-search`. The recipe and CI
-workflow are present; a local Docker build and a remote CI run remain unverified.
+workflow are present. The test workflow has passed on GitHub Actions; a local
+Docker build remains unverified.
 
 ## Streamlit Community Cloud
 
-Use these coordinates for this version, not `main` unless these changes have
-subsequently been merged there:
+Deploy the merged version from `main`:
 
 | Deployment field | Value |
 |---|---|
 | Repository | `SBusienei/Netflix-Relevance-Project` |
-| Branch | `cherutosharleen-retrieval-failure-analysis` |
+| Branch | `main` |
 | Main file path | `streamlit_app.py` |
 | Advanced settings: Python version | `3.12` |
 
 Sign in at <https://share.streamlit.io/>. If your existing app already uses
-this branch and entry point, open its three-dot menu and select **Reboot**.
-The earlier clone failure occurred while this branch was missing; retry after
-the branch has been pushed. You can also use **Manage app > three-dot menu >
-Reboot app** from the deployed app.
+the feature branch `cherutosharleen-retrieval-failure-analysis` and this entry
+point, it can still run while that branch exists: open its three-dot menu and
+select **Reboot**. The earlier clone failure occurred while that branch was
+missing. You can also use **Manage app > three-dot menu > Reboot app** from the
+deployed app.
 
 For a new deployment, select **Create app**, choose the GitHub deployment
 option, enter the fields above, and select **Deploy**. Community Cloud reads
 `requirements.txt` from this repository. Do not delete an existing app just
 to retry cloning the restored branch.
+Changing an existing app's repository, branch, or entry point requires
+redeployment; those coordinates are not editable in the normal app settings.
 
 Publishing code to GitHub does not verify a hosted deployment. Transformer
 downloads and first-run indexing can take several minutes, and memory/startup
