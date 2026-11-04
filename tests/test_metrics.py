@@ -2,13 +2,13 @@
 
 import pytest
 
-from metrics import (
+from src.metrics import (
     mean_reciprocal_rank, ndcg_at_k, precision_at_k, recall_at_k, reciprocal_rank,
 )
 
 
 def test_precision_and_recall_hand_calculation() -> None:
-    judgments = {"a": 0, "b": 3, "c": 1, "d": 2, "e": 0}
+    judgments = {"a": 0, "b": 2, "c": 1, "d": 2, "e": 0}
     ranking = ["a", "c", "b"]
     # At threshold 1, b/c/d are relevant. Top two are a/c: one relevant hit.
     # P@2 = 1/2; R@2 = 1/3. At three, P@3 = 2/3 and R@3 = 2/3.
@@ -19,20 +19,20 @@ def test_precision_and_recall_hand_calculation() -> None:
 
 
 def test_binary_threshold_is_explicit_and_inclusive() -> None:
-    judgments = {"a": 1, "b": 2, "c": 3}
+    judgments = {"a": 0, "b": 1, "c": 2}
     ranking = ["a", "b", "c"]
-    # Threshold 2: b/c relevant, a not. P@2 = 1/2; R@2 = 1/2; RR = 1/2.
-    # Threshold 3: only c relevant, at rank 3; P@2 = R@2 = 0; RR = 1/3.
-    assert precision_at_k(ranking, judgments, 2, relevant_grade=2) == 1 / 2
-    assert recall_at_k(ranking, judgments, 2, relevant_grade=2) == 1 / 2
-    assert reciprocal_rank(ranking, judgments, relevant_grade=2) == 1 / 2
-    assert precision_at_k(ranking, judgments, 2, relevant_grade=3) == 0
-    assert recall_at_k(ranking, judgments, 2, relevant_grade=3) == 0
-    assert reciprocal_rank(ranking, judgments, relevant_grade=3) == 1 / 3
+    # Threshold 1: b/c relevant, a not. P@2 = 1/2; R@2 = 1/2; RR = 1/2.
+    # Threshold 2: only c relevant, at rank 3; P@2 = R@2 = 0; RR = 1/3.
+    assert precision_at_k(ranking, judgments, 2, relevant_grade=1) == 1 / 2
+    assert recall_at_k(ranking, judgments, 2, relevant_grade=1) == 1 / 2
+    assert reciprocal_rank(ranking, judgments, relevant_grade=1) == 1 / 2
+    assert precision_at_k(ranking, judgments, 2, relevant_grade=2) == 0
+    assert recall_at_k(ranking, judgments, 2, relevant_grade=2) == 0
+    assert reciprocal_rank(ranking, judgments, relevant_grade=2) == 1 / 3
 
 
 def test_short_ranking_does_not_change_precision_denominator() -> None:
-    judgments = {"a": 3, "b": 1}
+    judgments = {"a": 2, "b": 1}
     # One returned relevant document, k=5: P@5=1/5, not 1.
     # There are two judged relevant documents, so R@5=1/2.
     assert precision_at_k(["a"], judgments, 5, relevant_grade=1) == 1 / 5
@@ -40,7 +40,7 @@ def test_short_ranking_does_not_change_precision_denominator() -> None:
 
 
 def test_reciprocal_rank_hand_calculation() -> None:
-    judgments = {"a": 0, "b": 0, "c": 2, "d": 3}
+    judgments = {"a": 0, "b": 0, "c": 1, "d": 2}
     # First relevant result c is at rank 3: RR=1/3. d at rank 4 adds nothing.
     assert reciprocal_rank(["a", "b", "c", "d"], judgments, relevant_grade=1) == 1 / 3
     # No relevant hit retrieved: RR=0, even though c/d are relevant in the list.
@@ -54,7 +54,7 @@ def test_mrr_is_an_equal_query_average() -> None:
     }
     judgments = {
         "first": {"a": 0, "b": 2},
-        "second": {"a": 0, "b": 0, "c": 3},
+        "second": {"a": 0, "b": 0, "c": 2},
         "third": {"a": 0, "d": 1},
     }
     # RRs are 1/2, 1/3, and 0. MRR=(1/2+1/3+0)/3 = 5/18.
@@ -63,37 +63,37 @@ def test_mrr_is_an_equal_query_average() -> None:
 
 
 def test_ndcg_hand_calculation_with_a_missed_high_grade() -> None:
-    judgments = {"a": 0, "b": 3, "c": 1, "d": 2}
+    judgments = {"a": 0, "b": 2, "c": 1, "d": 1}
     # Linear gains, base-2 discounts. At k=2, returned grades [0,1]:
     # DCG=0/log2(2)+1/log2(3)=0.6309297535714575.
-    # Ideal grades [3,2], including missed d: IDCG=3+2/log2(3)
-    # =4.261859507142915. nDCG=0.6309297535714575/4.261859507142915.
+    # Ideal grades [2,1]: IDCG=2+1/log2(3)=2.6309297535714575.
+    # nDCG=0.6309297535714575/2.6309297535714575.
     assert ndcg_at_k(["a", "c", "b"], judgments, 2) == pytest.approx(
-        0.6309297535714575 / 4.261859507142915,
+        0.6309297535714575 / 2.6309297535714575,
     )
 
 
 def test_ndcg_at_three_hand_calculation() -> None:
-    judgments = {"a": 0, "b": 3, "c": 1, "d": 2}
-    # Returned [3,0,1]: DCG=3+0+1/log2(4)=3.5.
-    # Ideal [3,2,1]: IDCG=3+2/log2(3)+1/2=4.761859507142915.
-    # nDCG@3=3.5/4.761859507142915.
+    judgments = {"a": 0, "b": 2, "c": 1, "d": 1}
+    # Returned [2,0,1]: DCG=2+0+1/log2(4)=2.5.
+    # Ideal [2,1,1], including missed d: IDCG=2+1/log2(3)+1/2
+    # =3.1309297535714575. nDCG@3=2.5/3.1309297535714575.
     assert ndcg_at_k(["b", "a", "c"], judgments, 3) == pytest.approx(
-        3.5 / 4.761859507142915,
+        2.5 / 3.1309297535714575,
     )
 
 
 def test_ndcg_ideal_ranking_and_cutoff_one() -> None:
-    judgments = {"a": 3, "b": 2, "c": 1, "d": 0}
+    judgments = {"a": 2, "b": 1, "c": 1, "d": 0}
     # Ideal ordering gives DCG=IDCG at any cutoff, including k>list length.
     assert ndcg_at_k(["a", "b", "c", "d"], judgments, 10) == 1
-    # At k=1 there is no rank discount: returned gain 2 / ideal gain 3.
-    assert ndcg_at_k(["b"], judgments, 1) == 2 / 3
+    # At k=1 there is no rank discount: returned gain 1 / ideal gain 2.
+    assert ndcg_at_k(["b"], judgments, 1) == 1 / 2
 
 
 def test_empty_ranking_is_explicitly_a_run_with_no_hits() -> None:
-    judgments = {"a": 3}
-    # Zero hits: P=0/k=0, R=0/1=0, RR=0, nDCG=0/3=0.
+    judgments = {"a": 2}
+    # Zero hits: P=0/k=0, R=0/1=0, RR=0, nDCG=0/2=0.
     assert precision_at_k([], judgments, 3, relevant_grade=1) == 0
     assert recall_at_k([], judgments, 3, relevant_grade=1) == 0
     assert reciprocal_rank([], judgments, relevant_grade=1) == 0
@@ -120,7 +120,7 @@ def test_invalid_cutoffs_are_rejected(k: int) -> None:
         ndcg_at_k(["a"], {"a": 1}, k)
 
 
-@pytest.mark.parametrize("threshold", [0, 4, 1.5, True])
+@pytest.mark.parametrize("threshold", [0, 3, 4, 1.5, True])
 def test_invalid_thresholds_are_rejected(threshold: int) -> None:
     for measure in (precision_at_k, recall_at_k):
         with pytest.raises(ValueError, match="explicit relevance threshold"):
@@ -131,7 +131,7 @@ def test_invalid_thresholds_are_rejected(threshold: int) -> None:
         mean_reciprocal_rank({"q": ["a"]}, {"q": {"a": 1}}, relevant_grade=threshold)
 
 
-@pytest.mark.parametrize("grade", [-1, 4, 1.0, True, None, "1"])
+@pytest.mark.parametrize("grade", [-1, 3, 4, 1.0, True, None, "1"])
 def test_invalid_grades_are_rejected(grade: int) -> None:
     with pytest.raises(ValueError, match="grades must be integers"):
         ndcg_at_k(["a"], {"a": grade}, 1)

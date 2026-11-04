@@ -15,8 +15,8 @@ def _validate_cutoff(k: int) -> None:
 
 
 def _validate_threshold(relevant_grade: int) -> None:
-    if type(relevant_grade) is not int or relevant_grade not in (1, 2, 3):
-        raise ValueError("Choose an explicit relevance threshold of 1, 2, or 3")
+    if type(relevant_grade) is not int or relevant_grade not in (1, 2):
+        raise ValueError("Choose an explicit relevance threshold of 1 or 2")
 
 
 def _grades(ranking: Sequence[str], judgments: Judgments) -> list[int]:
@@ -27,8 +27,8 @@ def _grades(ranking: Sequence[str], judgments: Judgments) -> list[int]:
     for document_id, grade in judgments.items():
         if not isinstance(document_id, str) or not document_id.strip():
             raise ValueError("Judgment document IDs must be nonempty strings")
-        if type(grade) is not int or grade not in (0, 1, 2, 3):
-            raise ValueError("Human relevance grades must be integers from 0 to 3")
+        if type(grade) is not int or grade not in (0, 1, 2):
+            raise ValueError("Human relevance grades must be integers from 0 to 2")
     if any(not isinstance(document_id, str) or not document_id.strip() for document_id in ranking):
         raise ValueError("Ranked document IDs must be nonempty strings")
     if len(set(ranking)) != len(ranking):

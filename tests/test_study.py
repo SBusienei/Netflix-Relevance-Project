@@ -9,13 +9,34 @@ from pathlib import Path
 import pytest
 from sklearn.metrics import cohen_kappa_score
 
-from film_data import FIELDS
-from judgments import (
-    LABEL_COLUMNS, agreement, consistency, create_pool, label_pool, load_labels,
-    load_pool, sample_relabel,
+from src.data import FIELDS
+from src.study import (
+    LABEL_COLUMNS, agreement, append_label, consistency, label_pool, load_labels,
+    load_pool, sample_relabel, fingerprint, freeze_queries, load_queries, read_table, write_json,
 )
-from label_cli import main
-from query_sets import fingerprint, freeze_queries, load_queries, read_table
+from src import evaluate
+from src.evaluate import main
+from src.index import Index
+
+
+def test_append_rejects_grade_three_without_creating_a_file(tmp_path: Path) -> None:
+    path = tmp_path / "labels.csv"
+    with pytest.raises(ValueError, match="integers from 0 to 2"):
+        append_label(path, {"grade": "3"})
+    assert not path.exists()
+
+
+def test_query_relabel_sampling_repeats_complete_queries(workspace: dict[str, Path]) -> None:
+    complete_initial(workspace)
+    sample_relabel(workspace["pool.json"], workspace["split.json"], workspace["corpus.csv"],
+                   workspace["labels.csv"], workspace["repeat.json"], None, 43, query_count=2)
+    initial = json.loads(workspace["pool.json"].read_text(encoding="utf-8"))["pairs"]
+    saved = json.loads(workspace["repeat.json"].read_text(encoding="utf-8"))
+    selected = {pair["query_id"] for pair in saved["pairs"]}
+    assert len(selected) == 2 and saved["sampling_unit"] == "queries"
+    assert {(pair["query_id"], pair["show_id"]) for pair in saved["pairs"]} == {
+        (pair["query_id"], pair["show_id"]) for pair in initial if pair["query_id"] in selected}
+    assert all(set(pair) == {"query_id", "show_id"} for pair in saved["pairs"])
 
 
 @pytest.fixture
@@ -34,7 +55,15 @@ def workspace(tmp_path: Path) -> dict[str, Path]:
         "query_id,query\nq1,Orbit\nq2,Kitchen\nq3,Forest\nq4,Ocean\n", encoding="utf-8",
     )
     freeze_queries(paths["queries.csv"], paths["split.json"], paths["corpus.csv"], 0.25, 42)
-    create_pool(paths["split.json"], paths["corpus.csv"], paths["pool.json"], "dev", 2, 42)
+    # The human-tool tests use an ungraded synthetic queue, not a retrieval model or Netflix labels.
+    queries = load_queries(paths["split.json"], paths["corpus.csv"])
+    write_json(paths["pool.json"], {
+        "version": 1, "kind": "initial", "pass_id": "initial", "partition": "dev",
+        "split_sha256": fingerprint(paths["split.json"]), "corpus_sha256": fingerprint(paths["corpus.csv"]),
+        "pairs": [{"query_id": query_id, "show_id": show_id}
+                  for query_id, row in queries.items() if row["split"] == "dev"
+                  for show_id in ("s1", "s2")],
+    })
     return paths
 
 
@@ -52,7 +81,7 @@ def label(
 
 def complete_initial(paths: dict[str, Path]) -> None:
     # These are artificial test-fixture grades, never labels for Netflix records.
-    label(paths, ["0", "1", "2", "3", "0", "1"])
+    label(paths, ["0", "1", "2", "2", "0", "1"])
 
 
 def make_repeat(paths: dict[str, Path], size: int = 3) -> None:
@@ -130,50 +159,6 @@ def test_pool_only_contains_selected_partition_and_no_grades(workspace: dict[str
     assert not p["labels.csv"].exists()
 
 
-def test_heldout_has_its_own_pool(workspace: dict[str, Path], tmp_path: Path) -> None:
-    p = workspace
-    output = tmp_path / "heldout.json"
-    create_pool(p["split.json"], p["corpus.csv"], output, "heldout", 2, 42)
-    _, pairs, queries = load_pool(output, p["split.json"], p["corpus.csv"])
-    assert len(pairs) == 2
-    assert all(queries[query_id]["split"] == "heldout" for query_id, _ in pairs)
-    complete_initial(p)
-    responses = iter(["1", "2"])
-    label_pool(output, p["split.json"], p["corpus.csv"], p["labels.csv"],
-               read=lambda _: next(responses), display=lambda _: None)
-    assert len(read_table(p["labels.csv"], LABEL_COLUMNS)) == 8
-
-
-def test_additional_candidates_are_ungraded_deduplicated_and_checked(
-    workspace: dict[str, Path], tmp_path: Path,
-) -> None:
-    p = workspace
-    _, baseline_pairs, _ = load_pool(p["pool.json"], p["split.json"], p["corpus.csv"])
-    query_id, existing = baseline_pairs[0]
-    additional = next(
-        show_id for show_id in ("s1", "s2", "s3", "s4") if (query_id, show_id) not in baseline_pairs
-    )
-    extra = tmp_path / "extra.csv"
-    extra.write_text(
-        f"query_id,show_id\n{query_id},{existing}\n{query_id},{additional}\n{query_id},{additional}\n",
-        encoding="utf-8",
-    )
-    output = tmp_path / "extended.json"
-    create_pool(p["split.json"], p["corpus.csv"], output, "dev", 2, 42, extra)
-    _, pairs, _ = load_pool(output, p["split.json"], p["corpus.csv"])
-    assert len(pairs) == 7 and (query_id, additional) in pairs
-    assert json.loads(output.read_text())["additional_pairs_sha256"] == fingerprint(extra)
-    extra.write_text(f"query_id,show_id\n{query_id},unknown\n", encoding="utf-8")
-    with pytest.raises(ValueError, match="Unknown additional"):
-        create_pool(p["split.json"], p["corpus.csv"], tmp_path / "bad.json", "dev", 2, 42, extra)
-    extra.write_text("query_id,show_id\nunknown,s1\n", encoding="utf-8")
-    with pytest.raises(ValueError, match="selected query partition"):
-        create_pool(p["split.json"], p["corpus.csv"], tmp_path / "bad.json", "dev", 2, 42, extra)
-    extra.write_text(f"query_id,show_id,grade\n{query_id},s1,0\n", encoding="utf-8")
-    with pytest.raises(ValueError, match="expected CSV columns"):
-        create_pool(p["split.json"], p["corpus.csv"], tmp_path / "bad.json", "dev", 2, 42, extra)
-
-
 @pytest.mark.parametrize("mutate", ["grade", "unknown", "duplicate", "heldout", "kind", "empty"])
 def test_bad_candidate_pool_is_rejected(workspace: dict[str, Path], mutate: str) -> None:
     p = workspace
@@ -198,13 +183,13 @@ def test_bad_candidate_pool_is_rejected(workspace: dict[str, Path], mutate: str)
 
 def test_explicit_input_timestamp_and_resume(workspace: dict[str, Path]) -> None:
     p = workspace
-    messages = label(p, ["", "4", "1.5", "2", "q"])
-    assert sum("no default" in message for message in messages) == 3
+    messages = label(p, ["", "3", "4", "1.5", "2", "q"])
+    assert sum("no default" in message for message in messages) == 4
     rows = read_table(p["labels.csv"], LABEL_COLUMNS)
     assert len(rows) == 1 and rows[0]["grade"] == "2"
     assert rows[0]["timestamp"].endswith("+00:00")
     assert rows[0]["pool_sha256"] == fingerprint(p["pool.json"])
-    label(p, ["1", "0", "3", "2", "1"])
+    label(p, ["1", "0", "2", "2", "1"])
     assert len(read_table(p["labels.csv"], LABEL_COLUMNS)) == 6
     messages = label(p, [])
     assert "0 unlabelled" in messages[0] and messages[-1] == "Pass complete."
@@ -249,7 +234,7 @@ def test_blind_saved_subset_resumes_and_preserves_initial_labels(workspace: dict
     assert p["labels.csv"].read_bytes().startswith(original)
     with pytest.raises(ValueError, match="Missing human labels: 2"):
         consistency(p["repeat.json"], p["split.json"], p["corpus.csv"], p["labels.csv"])
-    label(p, ["0", "3"], pool="repeat.json")
+    label(p, ["0", "2"], pool="repeat.json")
     result = consistency(p["repeat.json"], p["split.json"], p["corpus.csv"], p["labels.csv"])
     assert result["paired_count"] == 3 and result["partition"] == "dev"
     rows = read_table(p["labels.csv"], LABEL_COLUMNS)
@@ -287,7 +272,7 @@ def test_invalid_or_empty_judgment_csv_fails_explicitly(workspace: dict[str, Pat
     label(p, ["1", "q"])
     original = p["labels.csv"].read_text()
     row = read_table(p["labels.csv"], LABEL_COLUMNS)[0]
-    for column, value in (("grade", "4"), ("timestamp", "2026-10-28T00:00:00"),
+    for column, value in (("grade", "3"), ("grade", "4"), ("timestamp", "2026-10-28T00:00:00"),
                           ("show_id", "missing"), ("pool_sha256", "bad"),
                           ("split_sha256", "different")):
         with p["labels.csv"].open("w", encoding="utf-8", newline="") as target:
@@ -312,20 +297,20 @@ def test_duplicate_csv_grades_are_rejected(workspace: dict[str, Path]) -> None:
 
 
 def test_hand_computed_agreement() -> None:
-    # Synthetic passes [0,1,2,3] vs [0,2,1,3]: 2/4 exact.
-    # Observed quadratic disagreement = (0+1+1+0)/(9*4) = 1/18.
-    # Both marginals uniform; expected squared distance = 2*Var(0,1,2,3)
-    # = 2*1.25 = 2.5, so expected weighted disagreement = 2.5/9 = 5/18.
-    # Kappa = 1-(1/18)/(5/18) = 0.8.
-    result = agreement([0, 1, 2, 3], [0, 2, 1, 3])
-    assert result["exact_agreement"] == 0.5
-    assert result["quadratic_weighted_kappa"] == pytest.approx(0.8)
+    # Synthetic passes [0,1,2] vs [0,2,1]: 1/3 exact.
+    # Observed quadratic disagreement = (0+1+1)/(4*3) = 1/6.
+    # Both marginals uniform; expected squared distance = 2*Var(0,1,2)
+    # = 2*(2/3) = 4/3, so expected weighted disagreement = (4/3)/4 = 1/3.
+    # Kappa = 1-(1/6)/(1/3) = 0.5.
+    result = agreement([0, 1, 2], [0, 2, 1])
+    assert result["exact_agreement"] == 1 / 3
+    assert result["quadratic_weighted_kappa"] == pytest.approx(0.5)
 
 
 def test_kappa_cross_check_is_separate_from_definition_test() -> None:
-    first, second = [0, 0, 1, 2, 3, 3], [0, 1, 1, 3, 2, 3]
+    first, second = [0, 0, 1, 1, 2, 2], [0, 1, 1, 2, 1, 2]
     assert agreement(first, second)["quadratic_weighted_kappa"] == pytest.approx(
-        cohen_kappa_score(first, second, labels=[0, 1, 2, 3], weights="quadratic"),
+        cohen_kappa_score(first, second, labels=[0, 1, 2], weights="quadratic"),
     )
 
 
@@ -334,11 +319,11 @@ def test_degenerate_kappa_is_explicitly_undefined() -> None:
     assert result["exact_agreement"] == 1
     assert result["quadratic_weighted_kappa"] is None
     assert "undefined" in str(result["kappa_note"])
-    assert agreement([0, 0], [3, 3])["quadratic_weighted_kappa"] == 0
+    assert agreement([0, 0], [2, 2])["quadratic_weighted_kappa"] == 0
 
 
 @pytest.mark.parametrize("first,second", [
-    ([], []), ([0], []), ([4], [0]), ([True], [1]),
+    ([], []), ([0], []), ([3], [0]), ([4], [0]), ([True], [1]),
 ])
 def test_invalid_consistency_inputs(first: list[int], second: list[int]) -> None:
     with pytest.raises(ValueError):
@@ -346,14 +331,15 @@ def test_invalid_consistency_inputs(first: list[int], second: list[int]) -> None
 
 
 def test_cli_missing_labels_are_an_error_not_a_result(
-    workspace: dict[str, Path], capsys: pytest.CaptureFixture[str],
+    workspace: dict[str, Path], capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     p = workspace
     complete_initial(p)
     make_repeat(p)
+    monkeypatch.setattr(evaluate, "DATA_PATH", p["corpus.csv"])
     with pytest.raises(SystemExit) as error:
-        main(["consistency", "--pool", str(p["repeat.json"]), "--split-file", str(p["split.json"]),
-              "--csv", str(p["corpus.csv"]), "--labels", str(p["labels.csv"])])
+        main(["consistency", "--pool", str(p["repeat.json"]), "--split", str(p["split.json"]),
+              "--labels", str(p["labels.csv"])])
     assert error.value.code == 2
     captured = capsys.readouterr()
     assert "Missing human labels" in captured.err
@@ -362,10 +348,12 @@ def test_cli_missing_labels_are_an_error_not_a_result(
 
 def test_actual_cli_accepts_stdin_and_quits_cleanly(workspace: dict[str, Path]) -> None:
     p = workspace
-    script = Path(__file__).resolve().parents[1] / "label_cli.py"
+    # Inject a synthetic corpus into the child; exercise the real CLI parser and stdin.
+    script = ("import sys; from pathlib import Path; from src import evaluate; "
+              "evaluate.DATA_PATH = Path(sys.argv.pop(1)); evaluate.main()")
     result = subprocess.run(
-        [sys.executable, str(script), "label", "--pool", str(p["pool.json"]),
-         "--split-file", str(p["split.json"]), "--csv", str(p["corpus.csv"]),
+        [sys.executable, "-c", script, str(p["corpus.csv"]), "label", "--pool", str(p["pool.json"]),
+         "--split", str(p["split.json"]),
          "--labels", str(p["labels.csv"])],
         input="2\nq\n", capture_output=True, text=True, check=True,
     )
@@ -376,25 +364,28 @@ def test_actual_cli_accepts_stdin_and_quits_cleanly(workspace: dict[str, Path]) 
 
 def test_cli_split_pool_sample_and_consistency_round_trip(
     workspace: dict[str, Path], tmp_path: Path, capsys: pytest.CaptureFixture[str],
+    small_index: Index, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     p = workspace
     split_file, pool_file, repeat_file = (
         tmp_path / "cli-split.json", tmp_path / "cli-pool.json", tmp_path / "cli-repeat.json",
     )
+    monkeypatch.setattr(evaluate, "DATA_PATH", p["corpus.csv"])
+    monkeypatch.setattr(evaluate, "build_index", lambda: small_index)
     main(["split", "--queries", str(p["queries.csv"]), "--output", str(split_file),
-          "--csv", str(p["corpus.csv"]), "--heldout-fraction", "0.25"])
-    main(["pool", "--split-file", str(split_file), "--csv", str(p["corpus.csv"]),
-          "--output", str(pool_file), "-k", "2"])
-    responses = iter(["0", "1", "2", "3", "0", "1"])
+          "--heldout-fraction", "0.25"])
+    main(["pool", "--split", str(split_file), "--output", str(pool_file), "-k", "2", "--depth", "3"])
+    pool = json.loads(pool_file.read_text(encoding="utf-8"))
+    responses = iter(["2"] * len(pool["pairs"]))
     label_pool(pool_file, split_file, p["corpus.csv"], p["labels.csv"],
                read=lambda _: next(responses), display=lambda _: None)
-    main(["sample", "--split-file", str(split_file), "--csv", str(p["corpus.csv"]),
+    main(["sample", "--split", str(split_file),
           "--pool", str(pool_file), "--labels", str(p["labels.csv"]), "--size", "2",
           "--output", str(repeat_file)])
     responses = iter(["1", "2"])
     label_pool(repeat_file, split_file, p["corpus.csv"], p["labels.csv"],
                read=lambda _: next(responses), display=lambda _: None)
     capsys.readouterr()
-    main(["consistency", "--split-file", str(split_file), "--csv", str(p["corpus.csv"]),
+    main(["consistency", "--split", str(split_file),
           "--pool", str(repeat_file), "--labels", str(p["labels.csv"])])
     assert json.loads(capsys.readouterr().out)["paired_count"] == 2

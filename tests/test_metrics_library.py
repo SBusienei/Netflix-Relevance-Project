@@ -3,19 +3,19 @@
 import ir_measures
 import pytest
 
-from metrics import (
+from src.metrics import (
     mean_reciprocal_rank, ndcg_at_k, precision_at_k, recall_at_k, reciprocal_rank,
 )
 
 
-@pytest.mark.parametrize("threshold", [1, 2, 3])
+@pytest.mark.parametrize("threshold", [1, 2])
 @pytest.mark.parametrize("k", [1, 2, 5, 10])
 def test_metrics_agree_with_ir_measures(threshold: int, k: int) -> None:
     # Fully judged synthetic runs avoid the library's implicit unjudged=0 policy.
     judgments = {
-        "q1": {"a": 0, "b": 3, "c": 1, "d": 2, "e": 0},
-        "q2": {"a": 2, "b": 0, "c": 3, "d": 1, "e": 0},
-        "q3": {"a": 0, "b": 0, "c": 3, "d": 2, "e": 1},
+        "q1": {"a": 0, "b": 2, "c": 1, "d": 1, "e": 0},
+        "q2": {"a": 1, "b": 0, "c": 2, "d": 1, "e": 0},
+        "q3": {"a": 0, "b": 0, "c": 2, "d": 1, "e": 1},
     }
     rankings = {
         "q1": ["a", "c", "b"], "q2": ["c", "d", "b", "a"], "q3": ["a", "b"],

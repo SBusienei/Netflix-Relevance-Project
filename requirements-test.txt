@@ -1,2 +1,4 @@
 -r requirements.txt
+pytest>=8,<9
+scikit-learn
 ir-measures==0.4.3
