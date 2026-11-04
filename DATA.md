@@ -1,4 +1,4 @@
-# Retrieval data and index decisions (Phase 1)
+# Data cleaning and shared index decisions
 
 ## Source and scope
 
@@ -6,12 +6,11 @@ The checked-in `netflix_titles.csv` is the Netflix Movies and TV Shows dataset
 linked from the existing README:
 <https://www.kaggle.com/datasets/shivamb/netflix-shows>.
 The retrieval corpus keeps **all 8,807 records: 6,131 movies and 2,676 TV shows**.
-It is not a movies-only corpus, unlike the existing genre classifier. No genres,
-languages, countries, years, or record types are filtered out.
+No genres, languages, countries, years, or record types are filtered out.
 
-The source CSV is never overwritten. `film_data.load_records()` returns cleaned
-records and an audit report. `python retrieval.py --audit-only` prints that report,
-the source path and SHA-256, and the index configuration as JSON. These counts
+The source CSV is never overwritten. `src.data.load_records()` returns cleaned
+records and an audit report. `python -m src.evaluate audit` prints that report,
+the source path and SHA-256 as JSON. These counts
 describe the actual checked-in data, not retrieval effectiveness results.
 
 ## Every automatic cleaning decision
@@ -61,46 +60,41 @@ describe the actual checked-in data, not retrieval effectiveness results.
 | listed_in | 0 | 0 |
 | description | 0 | 0 |
 
-## Index representation and ablations
+## One shared representation
 
-`retrieval.py` builds an in-memory BM25Okapi index with `rank-bm25==0.2.2`.
-It does not persist a binary index; rerunning the command rebuilds it from the
-CSV and emits its configuration. Save stdout to retain a run's audit and scores.
+`src.index` uses the same cleaned records for all four retrieval methods.
+The indexed fields are `title`, `description`, `listed_in`, `cast`, `director`,
+and `country`. BM25 concatenates their values; embedding and reranking text
+adds field-name prefixes to nonempty values. Missing fields contribute no
+content. Genres and names remain text, not parsed entities.
 
-Defaults mirror the legacy `search.py` representation: combine `title`,
-`description`, `listed_in`, `cast`, `director`, and `country`; lowercase; split on
-whitespace; no stemming or stop-word removal. Cleaning is now explicit, so this
-is a representation baseline, not a claim of byte-for-byte identical raw input.
-Comma-separated genres and names are not parsed into entities.
+BM25 uses `rank-bm25==0.2.2`, with `k1=1.5`, `b=0.75`, and `epsilon=0.25`.
+Documents and queries use `re.findall(r"\w+", text.casefold())`: Unicode word
+runs, including underscores. Punctuation separates tokens, so `sci-fi` becomes
+`sci`, `fi`, and `O'Brien` becomes `o`, `brien`. Accents and non-Latin characters
+remain. No stemming, stop-word removal, field weighting, or language-aware
+segmentation is applied. The old whitespace/stemming/field-weight ablation
+interface has been retired, not silently retained under another name.
 
-- `--fields` selects any nonempty, unique subset of the CSV fields. Excluded
-  fields contribute nothing. Metadata fields such as year are opt-in.
-- `--weight title=3` repeats title tokens three times before combining fields.
-  Unspecified weights are one; weights must be positive integers. Exclude a field
-  with `--fields`, not a zero weight. This is **token repetition, not BM25F or a
-  weighted sum of field scores**: it changes term frequencies and document
-  lengths together and remains subject to BM25 saturation. Interpret weighting
-  ablations with this confound in mind.
-- `--tokenizer whitespace` preserves attached punctuation. `--tokenizer words`
-  extracts Unicode alphanumeric runs, splitting on punctuation and underscores:
-  `sci-fi` becomes `sci`, `fi`; `O'Brien` becomes `o`, `brien` when lowercased.
-  Accents and non-Latin letters remain; this is not language-aware segmentation.
-- `--preserve-case` disables lowercasing. `--stem` enables NLTK's English Porter
-  stemmer (default NLTK extensions); it needs no corpus downloads. It is not a
-  multilingual stemmer and can harm names and non-English text. The same
-  normalization, case handling, tokenizer, and stemmer apply to documents and
-  queries. Query terms are never field-weighted.
-- `--k1`, `--b`, and `--epsilon` expose the BM25Okapi defaults 1.5, 0.75, and
-  0.25, respectively. `rank-bm25` floors negative IDF values using epsilon times
-  average IDF; scores can still be negative for some corpora. Do not treat
-  a score as a relevance grade or remove negative/zero scores implicitly.
+BM25 IDF is `log(N-df+0.5) - log(df+0.5)`; negative values are replaced with
+epsilon times mean raw IDF. The search interface returns **positive-score
+lexical hits only**; no positive matches produce an empty BM25 list, not
+zero-score records presented as matches. This is the existing hybrid behaviour,
+not the retired baseline's all-record tie ordering.
 
-Each retained row remains an indexed document, even if its selected fields are
-empty. An entirely empty vocabulary is rejected explicitly. All documents are
-ranked by descending score, with ties broken by original CSV order. Queries
-with no indexed terms produce zero scores and a CLI notice; the returned order
-is a tie-break, not evidence of relevance. `k` must be positive and results are
-capped at corpus size.
+Embeddings use pinned `all-MiniLM-L6-v2`, 384 dimensions, normalized float32,
+with a 256-token limit. FAISS HNSW uses inner product (cosine for unit vectors),
+M=32, efConstruction=80, and efSearch=64. Reciprocal-rank fusion uses constant
+60. The pinned cross-encoder reranks the fused shortlist with a 512-token limit.
+All methods break considered-score ties using CSV order.
+
+Named settings and model revisions live in `src.index`/`src.search`; pools and
+frozen study settings record the protocol. Changes require new development
+pools and invalidate incompatible held-out settings. Embedding cache keys include
+source bytes, fields, embedding revision, token limit, and document-format version.
+If editing document formatting or cleaning logic, bump that format version and
+the study protocol version; a source-byte fingerprint alone cannot detect code edits.
+Cached vectors are checked for shape, dtype, finite values, and unit norms.
 
 ## Reproduction
 
@@ -108,23 +102,17 @@ From the repository root, using the same Python environment:
 
 ```powershell
 python -m pip install -r requirements.txt
-python retrieval.py --audit-only
-python retrieval.py --query "space adventure" -k 10
-python retrieval.py --fields title description listed_in --tokenizer words --stem --weight title=3 --query "space adventure"
+python -m src.evaluate audit
+python -m streamlit run streamlit_app.py
 python -m pip install -r requirements-test.txt
-python -m pytest -q
+python -m pytest tests\test_data.py -q
 ```
-
-Omit `--query` for an interactive prompt; submit an empty query or `q`, `quit`,
-or `exit` to leave. The old `python search.py` remains available as a legacy
-baseline and does not use this new cleaning/configuration pipeline.
 
 ## Research boundary
 
 The thesis that failures arise primarily upstream of scoring is **untested**.
-No judgments, metrics, tuning, failure assignments, or empirical effectiveness
-claims are produced in Phase 1. The judgment list is not yet available; evaluation
-must stop if required human labels are missing. Phase 2's [human judgment
-tooling](LABELING.md) freezes a development/held-out query split before any tuning.
-Configuration examples above illustrate mechanics only and are not recommended
-or tuned settings.
+The simplified project no longer includes the separate failure-cause analysis
+track. No relevance labels or effectiveness claims follow from this data audit.
+Evaluation must stop if required human labels are missing. The [single research
+workflow](README.md#one-human-research-workflow) freezes a development/held-out
+query split before tuning.

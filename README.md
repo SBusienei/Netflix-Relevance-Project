@@ -1,215 +1,237 @@
-# Netflix retrieval failure analysis
+# Netflix hybrid search
 
-BM25 retrieval over the Netflix catalogue, with human relevance judgments and
-human-assigned failure causes. A combined Streamlit app includes this research
-track and the existing **Guess the Genre** classifier.
+Search **8,807 Netflix movie and TV records** with BM25, vector retrieval,
+reciprocal-rank fusion, and transformer reranking. Inspect four ranked lists,
+call cached FastAPI endpoints, and use a local tool-calling agent whose outputs
+must be exact quotations from retrieved records.
 
-**Status:** implementation is available; research queries, relevance labels, and
-failure assignments have not been supplied. All effectiveness results below
-remain explicit placeholders. No empirical conclusion has been established.
+**Status:** working local prototype, not a completed relevance study. There is
+no checked-in human judgment set or established winning method. Human evaluation
+is omitted from the Streamlit interface; its local CLI and planned protocol are
+preserved below in a collapsed section. No relevance improvement or
+hallucination-free answering is claimed.
 
-## Question
+The former genre classifier and separate failure-cause/BM25-ablation track are
+not part of this minimal prototype. The original upstream-failure thesis remains untested.
 
-Do most retrieval failures originate upstream of the ranking function, in data
-quality, tokenisation, field coverage, or query-document vocabulary mismatch,
-rather than BM25 scoring itself?
+## Files you need to understand
 
-This is a thesis to test, not an assumption used to label failures. Only the
-researcher assigns relevance and failure categories.
-
-## Method
-
-1. Audit and conservatively clean the source data while preserving stable IDs.
-2. Freeze human-authored queries into development and held-out partitions
-   **before tuning**. Use only development queries to choose settings.
-3. Predeclare retrieval configurations and pool their candidates. Add
-   human-selected records to improve judgment coverage.
-4. Enter grades 0-3 yourself, then blindly re-label a saved sample later.
-5. Calculate metrics from their definitions; compare development ablations.
-6. Review every query below a chosen nDCG threshold and assign a primary cause.
-7. Freeze one configuration and metric protocol before final held-out evaluation.
-
-The failure distribution and metric deltas are evidence for discussion, not
-automatic proof that a particular mechanism caused a failure.
-
-## Dataset and cleaning
-
-The checked-in [Netflix Movies and TV Shows dataset](https://www.kaggle.com/datasets/shivamb/netflix-shows)
-contains **8,807 records: 6,131 movies and 2,676 TV shows**. Retrieval uses both
-types, unlike the movies-only genre classifier.
-
-Cleaning normalizes Unicode/whitespace, preserves missing text as empty, checks
-duplicates/identifiers, and narrowly repairs three misplaced duration values.
-No rows are removed from the current source, and the original CSV is unchanged.
-See [DATA.md](DATA.md) for every decision and measured missing-field counts.
-
-BM25 defaults search title, description, genres, cast, director, and country.
-Fields, integer token-repetition weights, tokenisation, case handling, English
-Porter stemming, and BM25 parameters are configurable. Repetition weights change
-document lengths too; they are not BM25F.
-
-## Labelling protocol and self-consistency
-
-The CLI shows a query and complete cleaned record, without scores, ranks, prior
-grades, or a suggested label. It accepts only your explicit integer grade 0-3
-and records a UTC timestamp immediately. There is no default grade.
-
-Write down your interpretation of the scale and query intent before labelling.
-Binary metrics require you to explicitly choose which grades count as relevant.
-The judgment list size is **[RESULT: number of judged query-record pairs]** over
-**[RESULT: number of research queries]** queries.
-
-Blind re-labelling samples already graded pairs without replacement, saves that
-exact queue, and hides earlier grades. Choose a delay and record it yourself.
-There is no enforced waiting period; the tool cannot prevent memory or reading
-your own original CSV. See [LABELING.md](LABELING.md).
-
-| Self-consistency item | Result |
+| File | Its one job |
 |---|---|
-| Re-labelled pairs | [RESULT: number of re-labelled pairs] |
-| Delay between passes | [RESULT: re-labelling delay] |
-| Exact agreement | [RESULT: exact self-agreement] |
-| Quadratic-weighted Cohen's kappa | [RESULT: quadratic-weighted Cohen's kappa] |
+| `src\data.py` | Read, clean, and audit the CSV without overwriting it. |
+| `src\index.py` | Build BM25, MiniLM embeddings, and a FAISS HNSW index; cache embeddings. |
+| `src\search.py` | Implement BM25, vector, hybrid/RRF, and hybrid-plus-rerank search. |
+| `src\agent.py` | Let a local model call search, then validate its quoted evidence. |
+| `src\study.py` | Freeze queries, store human grades, blind repeat labels, calculate agreement. |
+| `src\metrics.py` | Calculate precision, recall, MRR, and nDCG from their definitions. |
+| `src\evaluate.py` | One research CLI: audit, split, pool, label, sample, consistency, evaluate, freeze. |
+| `app\api.py` | Serve `/search`, `/rerank`, and `/ask` with a bounded search cache. |
+| `streamlit_app.py` | The only search interface: four tables and an optional agent. |
+| `bench\latency.py` | Measure warm-cache HTTP p50/p95 latency and concurrent throughput. |
 
-Undefined kappa is reported explicitly, not replaced with a perfect score.
+`tests\` protects these behaviours; `Dockerfile` serves the API; the GitHub
+Actions workflow runs the tests. `src\__init__.py` and `app\__init__.py` mark
+packages, not extra features. README is the practical guide; [DATA.md](DATA.md)
+is the cleaning audit. The raw `netflix_titles.csv` stays at the root so there
+is only one source copy.
 
-## Metrics
+This cleanup reduces the project, but **does not meet the original 500-line
+total target**. Input checks, label provenance, split safeguards, and grounding
+checks are retained rather than hidden behind wrappers or removed to meet a count.
 
-`metrics.py` implements precision@k, recall@k, reciprocal rank/MRR, and nDCG@k
-using the standard library. Tests include hand-worked examples and a separate
-`ir-measures` cross-check. See [METRICS.md](METRICS.md).
+## Run the one local page
 
-Precision divides by k even for short runs. Recall is relative to the supplied
-human judgment list. nDCG uses **linear grade gain** with base-2 log discounts.
-The analysis runner reports **MRR@k**, since it evaluates runs truncated at k.
-All query averages weight queries equally.
-
-Missing labels are errors, never implicit zero grades. Undefined recall/nDCG
-cases stop evaluation rather than silently dropping queries.
-
-| Measure | Development | Held-out, frozen configuration |
-|---|---|---|
-| Precision@10 | [RESULT: precision@10 dev] | [RESULT: precision@10 heldout] |
-| Recall@10, judged list | [RESULT: recall@10 dev] | [RESULT: recall@10 heldout] |
-| MRR@10 | [RESULT: MRR@10 dev] | [RESULT: MRR@10 heldout] |
-| nDCG@10, linear gain | [RESULT: nDCG@10 dev] | [RESULT: nDCG@10 heldout] |
-
-The table's cutoff is a reporting placeholder, not a chosen study protocol.
-Document the actual cutoff, binary threshold, and failure threshold before use.
-
-## Failure breakdown and ablations
-
-For each query below your nDCG threshold, the workflow exports top results,
-missed judged-relevant records, original field text, missing fields, matching
-fields excluded from the index, and literal overlap under the configured,
-word-token, and stemmed representations.
-
-You fill every primary cause in `assignments.csv`. Proposed categories do not
-pre-assign any failure. A complete assignment file produces per-experiment
-counts, metric-delta tables, and one baseline failure-count chart.
-
-| Baseline primary cause | Count |
-|---|---|
-| Tokenisation | [RESULT: baseline tokenisation failures] |
-| Missing or poor field data | [RESULT: baseline data-quality failures] |
-| Field coverage | [RESULT: baseline field-coverage failures] |
-| Vocabulary mismatch | [RESULT: baseline vocabulary failures] |
-| Field weighting | [RESULT: baseline field-weighting failures] |
-| Ambiguous judgment | [RESULT: baseline ambiguous judgments] |
-| True ranking failure | [RESULT: baseline ranking failures] |
-| Other, explained in notes | [RESULT: baseline other failures] |
-
-Development ablation deltas: **[RESULT: ablation metric-delta table]**.
-Baseline failure-count chart: **[RESULT: human-assigned failure-count chart]**.
-Thesis assessment: **[RESULT: interpretation after human failure review]**.
-
-See [ANALYSIS.md](ANALYSIS.md) for the full pooling, evaluation, review, summary,
-and held-out freeze procedure. The shipped `experiments.json` contains untuned
-mechanical examples, not recommended winning configurations.
-
-## Limitations
-
-- **Single annotator:** relevance and cause assignments reflect one person's
-  interpretation. Self-consistency is not inter-annotator agreement.
-- **Judgment-list size and coverage:** [RESULT: judgment-list size and coverage].
-  Pooling can omit relevant records; judged-list recall is not exhaustive corpus
-  recall. Unknown relevance is never silently treated as irrelevant.
-- **Development-set overfitting:** repeated ablations can adapt to development
-  queries and judgments. Freeze settings before final held-out evaluation.
-- Queries can leak through paraphrases even when duplicate text is rejected.
-  The software guards workflow inputs, not deliberate manual inspection.
-- Short, multilingual metadata can limit retrieval. English stemming can damage
-  names or non-English text. The catalogue is a historical snapshot.
-- Failure causes can overlap; a single primary category simplifies them.
-  Literal token evidence and ablation improvements alone do not prove causation.
-- A re-label sample can be small or affected by memory, timing, and selection.
-- MRR is depth-limited in the analysis runner. Undefined metrics require a
-  transparent protocol decision rather than hidden query exclusion.
-- Community Cloud sessions/files are not durable storage for research artifacts.
-
-## Reproduce locally
-
-Use Python 3.12 or newer in a virtual environment. From this checkout:
+Use Python 3.12 or newer, from this checkout:
 
 ```powershell
 python -m pip install -r requirements.txt
-python retrieval.py --audit-only
+python -m src.evaluate audit
 python -m streamlit run streamlit_app.py
 ```
 
-The combined app offers **Film search**, **Retrieval research**, and **Guess the
-genre**. Search needs no labels; research evaluation stops until you upload your
-own valid frozen split, pool, and judgments. Hosted outputs must be downloaded
-and backed up. Human labelling remains local through `label_cli.py`.
+Enter a query, choose the number of results, and click **Compare four methods**.
+Models load on submission, not when opening the page. The first run downloads
+models and computes embeddings; later builds reuse the gitignored `.hybrid_cache`.
+The in-memory index is shared within a process; results stay in each user's session.
 
-Create `judgment_data\queries.csv` yourself with header `query_id,query`, then:
+For practical comparisons, try `Stranger Things`, `movies about a crew stranded
+in space`, or `documentaries about chefs`. These are **demo examples, not a
+research query inventory**. Exact title words can occur in multiple titles;
+semantic matches can lack the query's literal wording. Different rankings do
+not, by themselves, establish which result deserves a higher relevance grade.
+
+BM25 uses casefolded Unicode word tokens across title, description, genres,
+cast, director, and country. Vectors use normalized MiniLM embeddings and
+approximate HNSW neighbours. Hybrid adds reciprocal ranks, not raw scores.
+Reranking scores the fused shortlist with a cross-encoder; it cannot recover a
+record outside that shortlist. The word-overlap column is diagnostic, not a label.
+Settings live in named constants in `src\index.py` and `src\search.py`; the
+research protocol records them. See DATA.md for the representation decisions.
+
+### Local agent
+
+Install/start Ollama separately and use a tool-capable model:
 
 ```powershell
-python label_cli.py split --queries judgment_data\queries.csv --output judgment_data\split.json --heldout-fraction 0.2 --seed 42
-python analysis_cli.py prepare --split-file judgment_data\split.json --experiments experiments.json -k 10 --output judgment_data\dev_pool.json
-python label_cli.py label --split-file judgment_data\split.json --pool judgment_data\dev_pool.json --labels judgment_data\judgments.csv
+ollama pull qwen3:0.6b
+$env:NETFLIX_AGENT_MODEL = "qwen3:0.6b"
+python -m streamlit run streamlit_app.py
 ```
 
-Choose thresholds explicitly before the evaluation commands documented in
-ANALYSIS.md. Complete blind re-labelling as documented in LABELING.md. Do not
-commit live judgments accidentally: `judgment_data/` is gitignored, not backed up.
-Explicitly version finalized, non-sensitive research artifacts when appropriate.
+In **Local grounded agent**, ask a catalogue question. The pretrained model
+first calls `search_films`; Python performs hybrid retrieval and supplies the
+retrieved metadata. A second, structured response contains citations. Python
+checks that each ID was retrieved and each quotation equals the complete cited
+field, then adds the real title. Empty citations mean explicit abstention;
+unapproved tools, invented citations, invalid outputs, and limits raise errors.
+
+This is extractive evidence, not a newly trained Netflix model or an unrestricted
+chatbot. Exact quotation proves provenance, **not relevance, source truth, or
+clinical safety**. Without `NETFLIX_AGENT_MODEL`, the agent is disabled.
+
+<details>
+<summary>Planned human relevance evaluation (not completed)</summary>
+
+## One human research workflow
+
+Write your **own queries and a 0/1/2 rubric before labelling**. The planned
+40-query study is not supplied by the code. Create `judgment_data\queries.csv`
+with exactly `query_id,query`; each row is one query you authored.
 
 ```powershell
+New-Item -ItemType Directory -Path judgment_data -Force
+# Write queries.csv yourself before running these commands.
+python -m src.evaluate split --queries judgment_data\queries.csv --output judgment_data\split.json
+python -m src.evaluate pool --split judgment_data\split.json --output judgment_data\dev_pool.json -k 10 --depth 50
+python -m src.evaluate label --split judgment_data\split.json --pool judgment_data\dev_pool.json --labels judgment_data\judgments.csv
+```
+
+The default split is 80/20 with seed 42, frozen **before tuning**. Development
+pooling saves each method's top-k ranking and shuffles their deduplicated union.
+You grade each query-record pair once, even when several methods retrieve it.
+The labeller shows the query and full cleaned record but hides method, rank,
+score, and previous grades. Only explicit `0`, `1`, or `2` is accepted; blank
+input has no default. Each submitted grade receives a UTC timestamp and is saved
+immediately. Quit and rerun to resume without replacing earlier judgments.
+
+Frozen splits, pools, and repeat queues cannot be overwritten. SHA-256 bindings
+reject reuse with changed source data, splits, or pools. To include known records
+outside the retrieved lists, provide an **ungraded** `query_id,show_id` CSV with
+`pool --additional-pairs`; candidates must belong to the chosen query partition.
+Never use the demo to tune or preview held-out queries before freezing settings.
+
+### Blind repeat and self-consistency
+
+```powershell
+python -m src.evaluate sample --split judgment_data\split.json --pool judgment_data\dev_pool.json --labels judgment_data\judgments.csv --query-count 10 --output judgment_data\repeat.json
+# Return a day later; the program does not enforce the delay.
+python -m src.evaluate label --split judgment_data\split.json --pool judgment_data\repeat.json --labels judgment_data\judgments.csv
+python -m src.evaluate consistency --split judgment_data\split.json --pool judgment_data\repeat.json --labels judgment_data\judgments.csv
+```
+
+This repeats all pooled pairs for the sampled queries; alternatively `--size`
+samples individual pairs. The saved queue hides earlier grades and records a
+separate pass. Exact agreement and quadratic-weighted Cohen's kappa compare
+paired grades, weighting each pair equally. Undefined kappa is reported as such.
+The tool cannot prevent remembering answers or reading your original CSV.
+
+### Evaluate development, then freeze one method
+
+Choose the binary threshold explicitly: either grades 1-2 count as relevant,
+or only grade 2 does. This affects precision, recall, and MRR; nDCG always uses
+the original linear graded gain. Do not choose it using held-out results.
+
+```powershell
+$grade = Read-Host "Binary relevance threshold (1 or 2)"
+python -m src.evaluate evaluate --split judgment_data\split.json --pool judgment_data\dev_pool.json --labels judgment_data\judgments.csv --relevant-grade $grade --output judgment_data\dev_results.csv
+$winner = Read-Host "Method selected using development results (bm25, vector, hybrid, or rerank)"
+python -m src.evaluate freeze --split judgment_data\split.json --pool judgment_data\dev_pool.json --labels judgment_data\judgments.csv --relevant-grade $grade --mode $winner --output judgment_data\frozen.json
+python -m src.evaluate pool --split judgment_data\split.json --partition heldout --frozen judgment_data\frozen.json --output judgment_data\heldout_pool.json
+python -m src.evaluate label --split judgment_data\split.json --pool judgment_data\heldout_pool.json --labels judgment_data\judgments.csv
+python -m src.evaluate evaluate --split judgment_data\split.json --pool judgment_data\heldout_pool.json --labels judgment_data\judgments.csv --frozen judgment_data\frozen.json --relevant-grade $grade --output judgment_data\heldout_results.csv
+```
+
+Evaluation refuses missing human labels, never imputes zeros, and never silently
+excludes undefined-metric queries. CSVs contain per-query results; stdout contains
+equal-query macro averages, including MRR@k. Precision divides by k even for short
+lists. Recall is relative to all judged-relevant records, not the full catalogue.
+nDCG uses linear gain and base-2 log discounts. The held-out run uses only the
+frozen method, cutoff, depth, protocol, and relevance threshold.
+
+`judgment_data\` is gitignored, **not backed up**. Preserve your actual queries,
+rubric, judgments, repeated passes, frozen settings, and measured outputs yourself.
+
+### Study results (pending)
+
+| Result | Value |
+|---|---|
+| Human queries and judged pairs | [RESULT: query count and judgment-list size] |
+| Repeat delay and exact agreement | [RESULT: repeat delay and exact self-agreement] |
+| Quadratic-weighted Cohen's kappa | [RESULT: self-consistency kappa] |
+| Development metrics by method | [RESULT: precision, recall, MRR and nDCG dev] |
+| Frozen held-out metrics | [RESULT: precision, recall, MRR and nDCG heldout] |
+
+</details>
+
+## Limitations
+
+Limitations include a **single annotator**, judgment-list size and incomplete
+coverage, and **overfitting to development queries**. If held-out judgments cover
+only the frozen method's own top-k, recall@k is trivially one when any relevant
+item exists; independent human-added candidates are needed for a meaningful
+coverage comparison. It is still judged-list recall, not corpus recall. Query
+paraphrases can leak across partitions despite duplicate-text checks. Short,
+missing, historical, multilingual metadata and model truncation limit retrieval.
+Approximate neighbours and the reranking shortlist can miss records. Quotation
+grounding does not guarantee good recommendations or factual correctness.
+
+## API, benchmark, and checks
+
+```powershell
+python -m uvicorn app.api:app --host 127.0.0.1 --port 8000
+# In another terminal, write demo queries one per line, then:
+python -m bench.latency --queries demo_queries.txt --mode hybrid --requests 100 --concurrency 4
 python -m pip install -r requirements-test.txt
 python -m pytest -q
 ```
 
-All fixture grades are artificial test data, never research judgments.
+`/search` selects a method; `/rerank` forces reranking; `/ask` uses the local
+agent. Search results use an in-memory LRU cache of 256 entries. The benchmark
+warms repeated queries first: it measures HTTP serving, **not cold inference or
+relevance**. No authentication/rate limiting is implemented; keep this API local.
+Reportable benchmark summary: **[RESULT: p50, p95 and throughput with machine/load configuration]**.
+Metric tests use hand-worked synthetic examples, with independent library
+cross-checks only in tests. Fixture grades are not Netflix research judgments.
 
-## Deploy the combined app free
+Docker build instructions: `docker build -t netflix-search .`, then
+`docker run --rm -p 127.0.0.1:8000:8000 netflix-search`. The recipe and CI
+workflow are present; a local Docker build and a remote CI run remain unverified.
 
-Push this branch to GitHub. In [Streamlit Community Cloud](https://share.streamlit.io/),
-sign in with your account, create an app from
-`CherutoSharleen/Netflix-Relevance-Project`, select the branch containing these
-files, and set the main file to **`streamlit_app.py`**. Choose Python 3.12 in
-advanced settings. `requirements.txt` contains runtime dependencies; the
-independent IR cross-check dependency is only in `requirements-test.txt`.
+## Streamlit Community Cloud
 
-The repository root is the app working directory. No secrets or external data
-services are required. The source CSV ships with the repository. Never put
-credentials in source control; `.streamlit/secrets.toml` is ignored.
+Use these coordinates for this version, not `main` unless these changes have
+subsequently been merged there:
 
-Deployment URL: **[RESULT: verified Streamlit deployment URL]**.
-GitHub push alone is not a Streamlit deployment: creation requires your
-authenticated Community Cloud session. Point an existing genre-only deployment
-at the new entry point only if you intend to replace its hosted interface.
+| Deployment field | Value |
+|---|---|
+| Repository | `SBusienei/Netflix-Relevance-Project` |
+| Branch | `cherutosharleen-retrieval-failure-analysis` |
+| Main file path | `streamlit_app.py` |
+| Advanced settings: Python version | `3.12` |
 
-## Existing genre classifier
+Sign in at <https://share.streamlit.io/>. If your existing app already uses
+this branch and entry point, open its three-dot menu and select **Reboot**.
+The earlier clone failure occurred while this branch was missing; retry after
+the branch has been pushed. You can also use **Manage app > three-dot menu >
+Reboot app** from the deployed app.
 
-The original `app.py` is preserved and remains independently runnable:
+For a new deployment, select **Create app**, choose the GitHub deployment
+option, enter the fields above, and select **Deploy**. Community Cloud reads
+`requirements.txt` from this repository. Do not delete an existing app just
+to retry cloning the restored branch.
 
-```powershell
-python -m streamlit run app.py
-```
-
-It uses movie descriptions, word counts, and Multinomial Naive Bayes to predict
-a main genre, with probabilities, influential words, and an adjustable alpha.
-Its movies-only preparation and classification task are distinct from BM25
-retrieval; its classifier accuracy is not a retrieval result. The combined
-navigation runs the same original entry point without rewriting that model.
+Publishing code to GitHub does not verify a hosted deployment. Transformer
+downloads and first-run indexing can take several minutes, and memory/startup
+costs may exceed free-host limits. The local Ollama agent is unavailable on
+Community Cloud by default; leave it disabled there. Hosted sessions are not
+durable research storage.
